@@ -1,61 +1,3 @@
-
----
-
-## `EfficientSVD` Code Logic Explanation
-
-This document provides a detailed explanation of the internal logic and workflow of the `EfficientSVD` Python class. The class is designed to offer a unified interface for computing the Singular Value Decomposition (SVD) of various matrix types by intelligently dispatching the computation to appropriate backend libraries.
-
-### Core Workflow and Logic
-
-1.  **Initialization (`__init__`)**:
-    * Upon instantiation of a `EfficientSVD` object, the user can specify default settings for the SVD computation method (`method`), the number of singular values/vectors (`k`) for truncated/randomized methods, whether to compute singular vectors (`compute_uv`), and a random state (`random_state`) for stochastic algorithms.
-    * The initializer checks for the availability of optional dependencies (PyTorch, SciPy, Scikit-learn) and issues warnings if a selected default method might rely on an unavailable library.
-
-2.  **Method Invocation (`compute`)**:
-    * This is the primary public method for users to perform SVD.
-    * It accepts the input matrix `A` and allows overriding the instance's default settings for `method`, `k`, `compute_uv`, and `random_state` for the specific computation.
-    * It consolidates the provided arguments with the instance defaults.
-    * It calls the internal `_validate_input` method to validate the inputs and determine the most appropriate SVD method and parameters to use (`effective_method`, validated `k`).
-    * Subsequently, it invokes the `_dispatch_svd` method, passing the validated parameters and the input matrix, to execute the actual SVD computation using the selected backend.
-    * Finally, it formats the result returned by `_dispatch_svd` based on the effective `compute_uv` value, ensuring the return type is either a tuple `(U, S, Vh)` or a NumPy array `S`, consistently returning NumPy arrays regardless of the backend used.
-
-3.  **Input Validation and Method Selection (`_validate_input`)**:
-    * **Basic Checks**: Verifies that the input matrix `A` is not `None`, is a supported type (NumPy `ndarray`, PyTorch `Tensor`, SciPy `spmatrix`), and is 2-dimensional.
-    * **Parameter `k` Validation**: If `k` is provided, it checks if `k` is a positive integer and does not exceed the smaller dimension of the matrix (`min(m, n)`). If it exceeds, a warning is issued, and `k` is adjusted to `min(m, n)`.
-    * **Automatic Method Selection (`method == 'auto'`) (Core Logic)**: This logic determines the most efficient SVD method based on matrix properties and user requirements:
-        * **If `compute_uv` is `False` (Singular Values only)**:
-            * Prefers `'values_only'` (using `torch.linalg.svdvals`) if PyTorch is available and the matrix is a dense type (Tensor or NumPy array).
-            * Otherwise (e.g., sparse matrix or no PyTorch), SVD must be computed first to extract `S`. In this scenario:
-                * If `k` is specified and relatively small (heuristic: `k < min(m, n) // 2`): Prioritizes `'randomized'` (sklearn), then `'truncated'` (scipy), falling back to `'full'` (numpy/torch).
-                * If the matrix is sparse and `k` is not specified: Sets `k = min(m, n) - 1` (required by `scipy.svds`), then chooses `'truncated'` (scipy) or `'randomized'` (sklearn). Raises an error if neither is available.
-                * If the matrix is dense, and `k` is unspecified or large: Defaults to `'values_only'`, anticipating a fallback to `'full'` if PyTorch is unavailable.
-        * **If `compute_uv` is `True` (U, S, Vh required)**:
-            * If `k` is specified:
-                * Small `k`: Prioritizes `'randomized'` (sklearn), then `'truncated'` (scipy), falling back to `'full'` (numpy/torch), issuing a warning if falling back.
-                * Large `k`: Chooses `'full'`.
-            * If the matrix is sparse and `k` is not specified: Issues a warning, sets `k = min(m, n) - 1`, chooses `'truncated'` (scipy) or `'randomized'` (sklearn). Raises an error if neither is available.
-            * If the matrix is dense and `k` is not specified: Chooses `'full'`.
-    * **Feasibility Checks and Fallbacks**: After auto-selection, verifies if the chosen method is viable given the available libraries. If not, applies fallbacks (e.g., `'randomized'` -> `'truncated'` or `'full'` if scikit-learn is missing).
-    * **Final `k` Validation**: Ensures `k` is appropriately set for methods requiring it (`'truncated'`, `'randomized'`). Specifically adjusts `k` if `method` is `'truncated'` using `scipy.svds` and `k >= min(m, n)`, as `svds` requires `k < min(m, n)`.
-    * **Library Availability Check**: Performs a final check that the necessary library for the `effective_method` is installed; raises `RuntimeError` otherwise. Issues warnings for potentially inefficient choices (e.g., `'full'` SVD on a sparse matrix).
-    * **Return**: Returns the validated/adjusted `A`, `k`, the determined `effective_method`, and `compute_uv`.
-
-4.  **SVD Computation Dispatch (`_dispatch_svd`)**:
-    * **Matrix Conversion**: Based on the `effective_method` and available backends, converts the input matrix `A` into the format required by the target backend function (`A_np` for NumPy/SciPy/Sklearn, `A_torch` for PyTorch, `A_scipy` for SciPy/Sklearn sparse methods). This may involve conversions like NumPy to PyTorch Tensor or sparse to dense, potentially incurring overhead. GPU placement is maintained if the input was a CUDA Tensor and PyTorch is used.
-    * **Backend Invocation**:
-        * `method == 'full'`: Prefers `torch.linalg.svd` if available (leveraging GPU potential), otherwise uses `np.linalg.svd`. Handles the difference that PyTorch returns `V`, requiring computation of `Vh`. Results are converted back to NumPy if the original input was not a Tensor.
-        * `method == 'values_only'`: Prefers `torch.linalg.svdvals` if available. Otherwise, recursively calls `_dispatch_svd` with `method='full'` and `compute_uv=False`, extracting only the singular values `S`.
-        * `method == 'truncated'`: Prefers `scipy.sparse.linalg.svds` (requires `k < min(m,n)`). Handles the ascending order of singular values returned by `svds` (requires reversal). Manages `compute_uv`. If SciPy is unavailable but Scikit-learn is, falls back to `sklearn.decomposition.TruncatedSVD`. If `U` is required (`compute_uv=True`), issues a warning and redirects to `'randomized'` as `TruncatedSVD` doesn't directly return `U`.
-        * `method == 'randomized'`: Uses `sklearn.utils.extmath.randomized_svd`. Ensures the input is in NumPy or SciPy sparse format.
-    * **Error Handling**: Employs a `try...except` block to catch potential exceptions from backend libraries (e.g., convergence failures) and provides informative error messages.
-    * **Return**: Returns the computed result, either as a tuple `(U, S, Vh)` or a 1D array `S`, ensuring all returned arrays are NumPy `ndarray` objects.
-
-### Summary
-
-The `EfficientSVD` class encapsulates the complexity of various SVD implementations behind a straightforward `compute` interface. Its core strength lies in the `_validate_input` logic, which intelligently selects an optimal or viable SVD strategy based on matrix characteristics, computation requirements, and library availability. The `_dispatch_svd` method then executes the computation using the chosen backend, handling necessary data conversions and ensuring consistent output formatting.
-
----
-
 # EfficientSVD User Documentation
 
 ## Overview
@@ -309,5 +251,60 @@ if _TORCH_AVAILABLE and A_torch is not None:
         print(f"Error: {e}")
 
 ```
+
+---
+
+## `EfficientSVD` Code Logic Explanation
+
+This document provides a detailed explanation of the internal logic and workflow of the `EfficientSVD` Python class. The class is designed to offer a unified interface for computing the Singular Value Decomposition (SVD) of various matrix types by intelligently dispatching the computation to appropriate backend libraries.
+
+### Core Workflow and Logic
+
+1.  **Initialization (`__init__`)**:
+    * Upon instantiation of a `EfficientSVD` object, the user can specify default settings for the SVD computation method (`method`), the number of singular values/vectors (`k`) for truncated/randomized methods, whether to compute singular vectors (`compute_uv`), and a random state (`random_state`) for stochastic algorithms.
+    * The initializer checks for the availability of optional dependencies (PyTorch, SciPy, Scikit-learn) and issues warnings if a selected default method might rely on an unavailable library.
+
+2.  **Method Invocation (`compute`)**:
+    * This is the primary public method for users to perform SVD.
+    * It accepts the input matrix `A` and allows overriding the instance's default settings for `method`, `k`, `compute_uv`, and `random_state` for the specific computation.
+    * It consolidates the provided arguments with the instance defaults.
+    * It calls the internal `_validate_input` method to validate the inputs and determine the most appropriate SVD method and parameters to use (`effective_method`, validated `k`).
+    * Subsequently, it invokes the `_dispatch_svd` method, passing the validated parameters and the input matrix, to execute the actual SVD computation using the selected backend.
+    * Finally, it formats the result returned by `_dispatch_svd` based on the effective `compute_uv` value, ensuring the return type is either a tuple `(U, S, Vh)` or a NumPy array `S`, consistently returning NumPy arrays regardless of the backend used.
+
+3.  **Input Validation and Method Selection (`_validate_input`)**:
+    * **Basic Checks**: Verifies that the input matrix `A` is not `None`, is a supported type (NumPy `ndarray`, PyTorch `Tensor`, SciPy `spmatrix`), and is 2-dimensional.
+    * **Parameter `k` Validation**: If `k` is provided, it checks if `k` is a positive integer and does not exceed the smaller dimension of the matrix (`min(m, n)`). If it exceeds, a warning is issued, and `k` is adjusted to `min(m, n)`.
+    * **Automatic Method Selection (`method == 'auto'`) (Core Logic)**: This logic determines the most efficient SVD method based on matrix properties and user requirements:
+        * **If `compute_uv` is `False` (Singular Values only)**:
+            * Prefers `'values_only'` (using `torch.linalg.svdvals`) if PyTorch is available and the matrix is a dense type (Tensor or NumPy array).
+            * Otherwise (e.g., sparse matrix or no PyTorch), SVD must be computed first to extract `S`. In this scenario:
+                * If `k` is specified and relatively small (heuristic: `k < min(m, n) // 2`): Prioritizes `'randomized'` (sklearn), then `'truncated'` (scipy), falling back to `'full'` (numpy/torch).
+                * If the matrix is sparse and `k` is not specified: Sets `k = min(m, n) - 1` (required by `scipy.svds`), then chooses `'truncated'` (scipy) or `'randomized'` (sklearn). Raises an error if neither is available.
+                * If the matrix is dense, and `k` is unspecified or large: Defaults to `'values_only'`, anticipating a fallback to `'full'` if PyTorch is unavailable.
+        * **If `compute_uv` is `True` (U, S, Vh required)**:
+            * If `k` is specified:
+                * Small `k`: Prioritizes `'randomized'` (sklearn), then `'truncated'` (scipy), falling back to `'full'` (numpy/torch), issuing a warning if falling back.
+                * Large `k`: Chooses `'full'`.
+            * If the matrix is sparse and `k` is not specified: Issues a warning, sets `k = min(m, n) - 1`, chooses `'truncated'` (scipy) or `'randomized'` (sklearn). Raises an error if neither is available.
+            * If the matrix is dense and `k` is not specified: Chooses `'full'`.
+    * **Feasibility Checks and Fallbacks**: After auto-selection, verifies if the chosen method is viable given the available libraries. If not, applies fallbacks (e.g., `'randomized'` -> `'truncated'` or `'full'` if scikit-learn is missing).
+    * **Final `k` Validation**: Ensures `k` is appropriately set for methods requiring it (`'truncated'`, `'randomized'`). Specifically adjusts `k` if `method` is `'truncated'` using `scipy.svds` and `k >= min(m, n)`, as `svds` requires `k < min(m, n)`.
+    * **Library Availability Check**: Performs a final check that the necessary library for the `effective_method` is installed; raises `RuntimeError` otherwise. Issues warnings for potentially inefficient choices (e.g., `'full'` SVD on a sparse matrix).
+    * **Return**: Returns the validated/adjusted `A`, `k`, the determined `effective_method`, and `compute_uv`.
+
+4.  **SVD Computation Dispatch (`_dispatch_svd`)**:
+    * **Matrix Conversion**: Based on the `effective_method` and available backends, converts the input matrix `A` into the format required by the target backend function (`A_np` for NumPy/SciPy/Sklearn, `A_torch` for PyTorch, `A_scipy` for SciPy/Sklearn sparse methods). This may involve conversions like NumPy to PyTorch Tensor or sparse to dense, potentially incurring overhead. GPU placement is maintained if the input was a CUDA Tensor and PyTorch is used.
+    * **Backend Invocation**:
+        * `method == 'full'`: Prefers `torch.linalg.svd` if available (leveraging GPU potential), otherwise uses `np.linalg.svd`. Handles the difference that PyTorch returns `V`, requiring computation of `Vh`. Results are converted back to NumPy if the original input was not a Tensor.
+        * `method == 'values_only'`: Prefers `torch.linalg.svdvals` if available. Otherwise, recursively calls `_dispatch_svd` with `method='full'` and `compute_uv=False`, extracting only the singular values `S`.
+        * `method == 'truncated'`: Prefers `scipy.sparse.linalg.svds` (requires `k < min(m,n)`). Handles the ascending order of singular values returned by `svds` (requires reversal). Manages `compute_uv`. If SciPy is unavailable but Scikit-learn is, falls back to `sklearn.decomposition.TruncatedSVD`. If `U` is required (`compute_uv=True`), issues a warning and redirects to `'randomized'` as `TruncatedSVD` doesn't directly return `U`.
+        * `method == 'randomized'`: Uses `sklearn.utils.extmath.randomized_svd`. Ensures the input is in NumPy or SciPy sparse format.
+    * **Error Handling**: Employs a `try...except` block to catch potential exceptions from backend libraries (e.g., convergence failures) and provides informative error messages.
+    * **Return**: Returns the computed result, either as a tuple `(U, S, Vh)` or a 1D array `S`, ensuring all returned arrays are NumPy `ndarray` objects.
+
+### Summary
+
+The `EfficientSVD` class encapsulates the complexity of various SVD implementations behind a straightforward `compute` interface. Its core strength lies in the `_validate_input` logic, which intelligently selects an optimal or viable SVD strategy based on matrix characteristics, computation requirements, and library availability. The `_dispatch_svd` method then executes the computation using the chosen backend, handling necessary data conversions and ensuring consistent output formatting.
 
 ---
