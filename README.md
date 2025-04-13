@@ -1,5 +1,13 @@
 # EfficientSVD User Documentation
 
+## Interactive Tutorial with Google Colab
+
+Explore the features of `EfficientSVD` interactively using our tutorial notebook hosted on Google Colab. This notebook covers installation, various SVD methods (`auto`, `full`, `truncated`, `randomized`, `values_only`), and usage with different matrix types (NumPy, SciPy sparse, PyTorch tensors).
+
+Click the badge below to launch the notebook:
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ToelUl/EfficientSVD/blob/main/efficient_svd_tutorial.ipynb)
+
 ## Overview
 
 `EfficientSVD` is a Python class providing a unified and efficient interface for computing the Singular Value Decomposition (SVD: A = U S Vh) of various matrix formats, including NumPy arrays, PyTorch tensors, and SciPy sparse matrices. It intelligently selects the optimal backend implementation (from PyTorch, SciPy, Scikit-learn) based on matrix properties, desired computation type (full, truncated, randomized), and available libraries, while also allowing manual method specification.
